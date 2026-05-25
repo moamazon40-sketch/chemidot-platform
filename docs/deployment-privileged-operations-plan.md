@@ -6,7 +6,7 @@ This document began as an architecture and operations plan. This implementation 
 
 ### Implementation Note
 
-On branch `fix/remove-db-push-from-build`, the automatic database mutation entry points identified below are removed from the root build command and the Render build command. Manual database and base-data scripts remain available only as explicit operational commands pending further governance work; migrations and data operations are not part of application build or deployment.
+On branch `fix/remove-db-push-from-build`, the automatic database mutation entry points identified below are removed from the root build command and the Render build command. On branch `chore/govern-admin-scripts`, identified admin, cleanup, seed, and supplier-content utilities require explicit manual operation gates, and `scripts/post-merge.sh` no longer invokes database push or seed tasks. Migrations and data operations are not part of application build or deployment.
 
 The review covered:
 
@@ -29,11 +29,11 @@ For a B2B chemical marketplace, these operations affect trust, compliance eviden
 | --- | --- | --- |
 | Database mutation during Vercel build | Before this branch, `vercel.json` invoked root `pnpm build`, which invoked `scripts/push-db-if-configured.mjs`; when configured, that script ran a forced Drizzle push and inserted base data | Critical, remediated in the automatic build path on this branch |
 | Database mutation during Render build | Before this branch, `render.yaml` included `pnpm --filter @workspace/db push` in the build command | Critical, remediated in the automatic build path on this branch |
-| Database and demo data mutation after merge | `scripts/post-merge.sh` runs database push and seed commands | Critical |
+| Database and demo data mutation after merge | Before the governance branch, `scripts/post-merge.sh` ran database push and seed commands; it now installs dependencies only | Critical, remediated in the post-merge path on this branch |
 | Credential reset or disclosure risk | Password utilities include live update scripts and utilities that can log credential or environment information | Critical |
-| Uncontrolled privilege elevation | Admin promotion script updates a user's role and permissions without an operational approval or audit workflow in the script | High |
-| Destructive record removal | Cleanup utility deletes broad sets of user and marketplace records, even though it includes confirmation checks | Critical |
-| Production pollution from seed or supplier maintenance scripts | Seed and supplier-shop utilities can create or update marketplace content and linked document metadata | High to Critical |
+| Uncontrolled privilege elevation | Admin promotion modifies roles and permissions; it is now gated by explicit execution, target confirmation, approvals, and audit-reference requirements | High, controlled manual operation retained |
+| Destructive record removal | Cleanup deletes broad sets of user and marketplace records; it is now non-production-only with execution, target, approval, audit, and backup-confirmation gates | Critical, controlled non-production operation retained |
+| Production pollution from seed or supplier maintenance scripts | Seed scripts are now production-blocked; supplier maintenance remains manual with approvals, audit-reference, and backup-confirmation gates | High to Critical, controlled manual operations retained |
 
 ### Recommended Direction
 
@@ -79,7 +79,7 @@ The remediated Render build command installs dependencies and builds the applica
 | `render.yaml` | Build command | Previously ran Drizzle push; now performs install and application builds only | Remediated on this branch | Keep build database-free |
 | `lib/db/package.json` | `push`, `push-force` | Synchronizes schema directly using Drizzle tooling | Critical if used against production without governance | Manual, restricted workflow only; no forced production push |
 | `scripts/push-db-if-configured.mjs` | Retained explicit utility, no longer called from root build | Forced schema push plus baseline data insert when database URL exists | Critical if invoked manually against production | Keep disconnected from deploy/build; govern or retire |
-| `scripts/post-merge.sh` | Post-merge operational workflow | Installs dependencies, pushes schema, seeds project and supplier content | Critical if pointed at production | Local/staging-only controlled use or retire |
+| `scripts/post-merge.sh` | Post-merge workflow | Installs dependencies only; database push and content seed calls removed on this branch | Remediated on this branch | Keep free of database and privileged content operations |
 
 ### Database Migration Context
 
@@ -93,24 +93,24 @@ The repository contains Drizzle migration files in `lib/db/migrations/`, while c
 | --- | --- | --- | --- | --- | --- |
 | `scripts/push-db-if-configured.mjs` | If a database URL exists, runs forced schema push and inserts baseline categories | Critical | A build may mutate schema and business reference data automatically | No production deploy runner; temporary approved local/staging operator only until removed from build | Remove from build path; deny production execution; require migration process for schema; record reference-data changes separately |
 | `lib/db/package.json` (`push`, `push-force`) | Exposes direct Drizzle schema synchronization commands | Critical | Schema may be altered without reviewed migration history or controlled release | Database release operator only; `push-force` prohibited for production | Separate migration credentials; approved migration plan; backup; dry-run/staging verification; audit record |
-| `scripts/post-merge.sh` | Pushes schema and seeds project and supplier-shop content after dependency install | Critical | A merge-time workflow can alter schema and visible marketplace data | Local/dev or isolated staging operator only | Prohibit production database target; explicit environment allowlist; split deployment from seed tasks; audit use |
+| `scripts/post-merge.sh` | Installs dependencies after merge; previously pushed schema and seeded content | Critical | Historical automatic mutation path could be reintroduced | No privileged operator action from this path | Database push and seed calls removed; keep protected by review and future CI checks |
 
 ### Seed And Supplier Maintenance Utilities
 
 | File Path | Purpose And Data Affected | Risk Level | Production Risk | Allowed Runner | Required Safeguards |
 | --- | --- | --- | --- | --- | --- |
 | `scripts/src/ensure-base-data.ts` | Inserts baseline product categories if absent | Medium | Changes production reference data and taxonomy outside a reviewed release | Approved data steward or release operator only when needed | Remove from build; reviewed reference-data change request; staging verification; idempotency report |
-| `scripts/src/seed.ts` | Inserts demo marketplace entities including users, suppliers, products, RFQs, quotations, collective ordering records, and orders | Critical | Pollutes production records and may create demo identities or misleading transaction history | Local/dev or disposable demo database operator only | Hard block production; separate demo credentials; clearly labeled fixtures; never run in deployment |
-| `scripts/src/seed-projects.ts` | Inserts public-facing project/content records | High | Publishes or changes marketplace content without product/content approval | Local/staging operator; production only under explicit content release approval | Target-environment confirmation; content owner approval; change log; rollback content plan |
-| `scripts/src/seed-supplier-shop.ts` | Adds supplier brands, supplier documents, and supplier experts for known supplier records | High | Can alter supplier representation and document references visible to buyers | Local/staging operator; approved production data steward only for a controlled migration | Validate suppliers and document provenance; content approval; audit; no automatic deployment execution |
-| `scripts/src/update-supplier-shop-urls.ts` | Updates supplier shop assets and document metadata and may insert missing SDS/TDS document entries | High | Can point production customers to incorrect compliance or technical documents | Approved data steward under manual maintenance change only | Document validation; supplier approval; pre/post export; audit trail; rollback mapping |
+| `scripts/src/seed.ts` | Inserts demo marketplace entities including users, suppliers, products, RFQs, quotations, collective ordering records, and orders | Critical | Pollutes production records and may create demo identities or misleading transaction history | Local/development/test disposable demo database operator only | Production and staging blocked; explicit CLI flag, environment confirmation, approval and audit references required; never run in deployment |
+| `scripts/src/seed-projects.ts` | Inserts public-facing project/content records | High | Publishes or changes marketplace content without product/content approval | Local/development/test/staging content operator only | Production blocked; explicit CLI flag, environment confirmation, approval and audit references required; no automatic deployment execution |
+| `scripts/src/seed-supplier-shop.ts` | Adds supplier brands, supplier documents, and supplier experts for known supplier records | High | Can alter supplier representation and document references visible to buyers | Local/development/test/staging data steward only | Production blocked; explicit CLI flag, environment confirmation, approval and audit references required; imported helper does not self-execute |
+| `scripts/src/update-supplier-shop-urls.ts` | Updates supplier shop assets and document metadata and may insert missing SDS/TDS document entries | High | Can point production customers to incorrect compliance or technical documents | Approved data steward under manual controlled maintenance only | Explicit CLI flag, environment confirmation, approval and audit references, and backup confirmation required; validate document provenance and rollback mapping; suppress database error detail in terminal output |
 
 ### Identity, Credential, And Destructive Utilities
 
 | File Path | Purpose And Data Affected | Risk Level | Production Risk | Allowed Runner | Required Safeguards |
 | --- | --- | --- | --- | --- | --- |
-| `scripts/src/promote-admin-by-email.ts` | Updates a selected user's role to admin and adjusts buyer/seller capabilities | High | Unauthorized privilege escalation or loss of appropriate segregation of duties | Authorized security/platform administrator only | Ticket and second approval; strong target confirmation; reason required; immutable admin audit event; review resulting permissions |
-| `scripts/src/cleanup-test-data.ts` | Deletes wide categories of non-admin marketplace, messaging, transaction, supplier, product, project, audit, and user data | Critical | Irreversible production business-record loss or audit evidence loss | Non-production environment operator only; exceptional production recovery process must be separately designed | Production deny-by-default; backup/snapshot; two-person approval; target database confirmation; dry-run/report; retention review |
+| `scripts/src/promote-admin-by-email.ts` | Updates a selected user's role to admin and adjusts buyer/seller capabilities | High | Unauthorized privilege escalation or loss of appropriate segregation of duties | Authorized security/platform administrator only | Explicit CLI flag; target must be repeated for confirmation; approval, second-approver, and audit references required; output does not print target identifier or database error detail |
+| `scripts/src/cleanup-test-data.ts` | Deletes wide categories of non-admin marketplace, messaging, transaction, supplier, product, project, audit, and user data | Critical | Irreversible production business-record loss or audit evidence loss | Non-production environment operator only | Production blocked; explicit CLI flag; environment/database target checks; approval, second-approver, audit, and backup confirmation required; connection values and database error detail not printed |
 | `reset-passwords-secure.js` | Manual password reset utility retained only for approved non-production targets | Critical | Account takeover or uncontrolled credential reset if operational controls are bypassed | Authorized security/platform administrator only for approved non-production support work | Production blocked; explicit CLI execution flag plus environment, database-host, and typed-operation confirmation required; no reset variables in normal deployment configuration; no secret, target-account, or environment-value logging; all-or-nothing transactional updates; prefer token-based application reset flow |
 | `reset-passwords-simple.js` | Quarantined legacy password-reset demonstration entrypoint | Critical | Historical path could be mistaken for an operational utility | No operational use; retained only as a fail-closed quarantine stub | Non-operational; does not read environment files or print sensitive values; never run in deployment |
 | `reset-passwords-standalone.js` | Quarantined legacy password-reset simulation entrypoint | Critical | Historical path could be mistaken for an operational utility | No operational use; retained only as a fail-closed quarantine stub | Non-operational; does not read environment files or print sensitive values; never run in deployment |
@@ -144,7 +144,8 @@ The repository contains Drizzle migration files in `lib/db/migrations/`, while c
 | Application build/deploy with no database operation | Normal workflow | Release approval as appropriate | Release approval as appropriate |
 | Database migration | Developer-controlled local database | Approved migration rehearsal and verification | Approved change ticket, backup, designated operator, recorded outcome |
 | Baseline reference-data update | Allowed on local fixture data | Data owner review | Separate approved data change, never via build |
-| Demo seeding | Allowed on isolated local/demo databases | Allowed only on clearly isolated demo/staging dataset | Prohibited |
+| Full demo seed (`scripts/src/seed.ts`) | Allowed only on isolated local/development/test fixture databases | Prohibited | Prohibited |
+| Project and supplier-shop content seed | Allowed on isolated fixture databases | Allowed only with explicit execution, content/data-owner approval, and audit reference | Prohibited |
 | Supplier document/content maintenance | Local fixture work | Data owner validation | Supplier/data-owner approval and auditable change |
 | Admin promotion | Development testing only with fixture identities | Security approval for test access | Two-person approval and audit record |
 | Password reset | Fixture accounts only | Authorized test/support procedure | Security-approved, audited reset procedure only |

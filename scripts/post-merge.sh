@@ -1,6 +1,4 @@
 #!/bin/bash
 set -e
 pnpm install --frozen-lockfile
-pnpm --filter db push
-pnpm --filter @workspace/scripts run seed:projects
-pnpm --filter @workspace/scripts run seed:supplier-shop
+# Database and privileged content operations require a separately approved manual runbook.
