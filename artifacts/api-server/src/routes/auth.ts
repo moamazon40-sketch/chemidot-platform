@@ -99,6 +99,10 @@ router.post("/auth/login", asyncHandler(async (req, res) => {
     res.status(401).json({ message: "Invalid credentials" });
     return;
   }
+  if (user.status !== "active") {
+    res.status(403).json({ message: "Account is not active" });
+    return;
+  }
   const token = signToken(user.id);
   const { passwordHash: _, ...safeUser } = user;
   res.json({ token, user: { ...safeUser, avatarUrl: null } });
