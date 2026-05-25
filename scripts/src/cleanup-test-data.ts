@@ -1,4 +1,8 @@
-import { pool } from "@workspace/db";
+import {
+  blockPrivilegedOperation,
+  printBlockedOperation,
+  requirePrivilegedOperation,
+} from "./privileged-operation-guard.js";
 
 type DeleteResult = { table: string; deleted: number; skipped?: boolean };
 
@@ -13,53 +17,47 @@ const DEFAULT_CATEGORY_SLUGS = [
   "food-feed-additives",
 ];
 
-function parseDatabaseUrl(databaseUrl: string) {
+function parseDatabaseTarget(databaseUrl: string) {
   const url = new URL(databaseUrl);
-  const user = decodeURIComponent(url.username || "");
   const host = url.hostname;
-  const port = url.port || (url.protocol === "postgresql:" ? "5432" : "");
   const dbName = url.pathname.replace(/^\//, "");
-  const sslmode = url.searchParams.get("sslmode") || "";
-  return { user, host, port, dbName, sslmode };
+  return { host, dbName };
 }
 
 function requireEnv(name: string) {
   const value = process.env[name];
-  if (!value) throw new Error(`${name} is required`);
+  if (!value) blockPrivilegedOperation(`Blocked: ${name} is required for cleanup target confirmation.`);
   return value;
 }
 
-async function countTable(table: string): Promise<number> {
-  const result = await pool.query(`select count(*)::int as c from ${table}`);
-  return Number(result.rows?.[0]?.c ?? 0);
-}
-
 async function main() {
+  requirePrivilegedOperation({
+    action: "test-data cleanup",
+    executionFlag: "--execute-test-data-cleanup",
+    allowedEnvironments: ["local", "development", "test", "staging"],
+    confirmation: (environment) => `DELETE TEST DATA IN ${environment}`,
+    requireApproval: true,
+    requireSecondApproval: true,
+    requireAuditReference: true,
+    requireBackup: true,
+  });
   const databaseUrl = requireEnv("DATABASE_URL");
-  const confirm = (process.env.CONFIRM_CLEANUP ?? "").toLowerCase() === "true";
   const expectedHost = requireEnv("EXPECTED_DB_HOST");
   const expectedDbName = requireEnv("EXPECTED_DB_NAME");
 
-  const info = parseDatabaseUrl(databaseUrl);
-
-  console.log("Cleanup Target:");
-  console.log(`- host: ${info.host}`);
-  console.log(`- db:   ${info.dbName}`);
-  console.log(`- user: ${info.user}`);
-  console.log(`- ssl:  ${info.sslmode || "(default)"}`);
+  const info = parseDatabaseTarget(databaseUrl);
 
   if (info.host !== expectedHost || info.dbName !== expectedDbName) {
-    console.error("Refusing to run: DATABASE_URL does not match EXPECTED_DB_HOST/EXPECTED_DB_NAME.");
-    process.exit(2);
+    blockPrivilegedOperation("Blocked: database target does not match the approved cleanup target.");
   }
 
-  if (!confirm) {
-    console.error("Refusing to run: set CONFIRM_CLEANUP=true to proceed.");
-    process.exit(2);
-  }
-
+  const { pool } = await import("@workspace/db");
   const client = await pool.connect();
   const results: DeleteResult[] = [];
+  const countTable = async (table: string): Promise<number> => {
+    const result = await pool.query(`select count(*)::int as c from ${table}`);
+    return Number(result.rows?.[0]?.c ?? 0);
+  };
 
   const deleteIfExists = async (table: string, sql: string, params: unknown[] = []) => {
     const existsResult = await client.query("select to_regclass($1) as table_name", [table]);
@@ -416,11 +414,12 @@ async function main() {
     throw err;
   } finally {
     client.release();
+    await pool.end();
   }
 }
 
 main().catch((err) => {
   console.error("Cleanup failed.");
-  console.error(err);
+  printBlockedOperation(err);
   process.exit(1);
 });

@@ -1,17 +1,22 @@
-import { pool } from "@workspace/db";
+import {
+  blockPrivilegedOperation,
+  printBlockedOperation,
+  requirePrivilegedOperation,
+} from "./privileged-operation-guard.js";
 
 type UserRow = {
-  id: number;
-  email: string;
   role: string;
   can_buy: boolean;
   can_sell: boolean;
 };
 
 function requireEmailArg() {
-  const raw = process.argv[2]?.trim().toLowerCase();
+  const raw = process.argv.find((arg) => arg.startsWith("--target-email="))?.slice("--target-email=".length).trim().toLowerCase();
   if (!raw) {
-    throw new Error("Usage: tsx ./src/promote-admin-by-email.ts <email>");
+    blockPrivilegedOperation("Blocked: manual admin promotion requires --target-email=<email>.");
+  }
+  if (process.argv.find((arg) => arg.startsWith("--confirm-target-email="))?.slice("--confirm-target-email=".length).trim().toLowerCase() !== raw) {
+    blockPrivilegedOperation("Blocked: explicit target email confirmation is required.");
   }
   return raw;
 }
@@ -22,27 +27,15 @@ function printUser(label: string, row: UserRow | undefined) {
     return;
   }
 
-  console.log(`${label}:`);
-  console.log(
-    JSON.stringify(
-      {
-        id: row.id,
-        email: row.email,
-        role: row.role,
-        canBuy: row.can_buy,
-        canSell: row.can_sell,
-      },
-      null,
-      2,
-    ),
-  );
+  console.log(`${label}: role=${row.role}, canBuy=${row.can_buy}, canSell=${row.can_sell}`);
 }
 
 async function promoteUser(email: string) {
+  const { pool } = await import("@workspace/db");
   const client = await pool.connect();
   try {
     const before = await client.query<UserRow>(
-      `select id, email, role, can_buy, can_sell
+      `select role, can_buy, can_sell
        from users
        where lower(email) = $1
        limit 1`,
@@ -60,7 +53,7 @@ async function promoteUser(email: string) {
            can_sell = false,
            updated_at = now()
        where lower(email) = $1
-       returning id, email, role, can_buy, can_sell`,
+       returning role, can_buy, can_sell`,
       [email],
     );
 
@@ -70,15 +63,25 @@ async function promoteUser(email: string) {
     };
   } finally {
     client.release();
+    await pool.end();
   }
 }
 
 async function main() {
+  requirePrivilegedOperation({
+    action: "admin promotion",
+    executionFlag: "--execute-admin-promotion",
+    allowedEnvironments: ["local", "development", "test", "staging", "production"],
+    confirmation: (environment) => `PROMOTE ADMIN IN ${environment}`,
+    requireApproval: true,
+    requireSecondApproval: true,
+    requireAuditReference: true,
+  });
   const email = requireEmailArg();
   const result = await promoteUser(email);
 
   if (!result.before) {
-    console.error(`No user found with email: ${email}`);
+    console.error("No matching user was found for the approved target.");
     process.exit(2);
   }
 
@@ -89,9 +92,6 @@ async function main() {
 main()
   .catch((err) => {
     console.error("Admin promotion failed.");
-    console.error(err instanceof Error ? err.message : err);
+    printBlockedOperation(err);
     process.exit(1);
-  })
-  .finally(async () => {
-    await pool.end();
   });

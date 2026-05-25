@@ -1,11 +1,5 @@
-import { db } from "@workspace/db";
-import {
-  suppliersTable,
-  supplierBrandsTable,
-  supplierDocumentsTable,
-  supplierExpertsTable,
-} from "@workspace/db";
-import { eq, count } from "drizzle-orm";
+import { pathToFileURL } from "node:url";
+import { printBlockedOperation, requirePrivilegedOperation } from "./privileged-operation-guard.js";
 
 function avatar(name: string, bg = "0f172a") {
   return `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=${bg}&color=ffffff&size=128&bold=true&rounded=true`;
@@ -15,7 +9,34 @@ function brandLogo(name: string, bg = "1d4ed8") {
   return `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=${bg}&color=ffffff&size=200&bold=true&font-size=0.33`;
 }
 
+function requireSupplierShopMutationAccess() {
+  if (process.argv.slice(2).includes("--execute-demo-seed")) {
+    requirePrivilegedOperation({
+      action: "demo data seed supplier content",
+      executionFlag: "--execute-demo-seed",
+      allowedEnvironments: ["local", "development", "test"],
+      confirmation: (environment) => `SEED DEMO DATA IN ${environment}`,
+      requireApproval: true,
+      requireAuditReference: true,
+    });
+    return;
+  }
+
+  requirePrivilegedOperation({
+    action: "supplier shop seed",
+    executionFlag: "--execute-supplier-shop-seed",
+    allowedEnvironments: ["local", "development", "test", "staging"],
+    confirmation: (environment) => `SEED SUPPLIER SHOP CONTENT IN ${environment}`,
+    requireApproval: true,
+    requireAuditReference: true,
+  });
+}
+
 async function seed() {
+  requireSupplierShopMutationAccess();
+  const { db, suppliersTable, supplierBrandsTable } = await import("@workspace/db");
+  const { eq, count } = await import("drizzle-orm");
+
   console.log("Seeding supplier shop data...");
 
   const suppliers = await db
@@ -23,7 +44,7 @@ async function seed() {
     .from(suppliersTable);
 
   if (suppliers.length === 0) {
-    console.log("No suppliers found — run the main seed first.");
+    console.log("No supplier records found; nothing was changed.");
     process.exit(0);
   }
 
@@ -34,13 +55,15 @@ async function seed() {
   const nccId = byName["National Chemical Co."];
   const ecpId = byName["Emirates Chem & Polymer"];
 
+  let changed = 0;
+  let skipped = 0;
   for (const [label, supplierId] of [
     ["SABIC Distribution", sabicId],
     ["National Chemical Co.", nccId],
     ["Emirates Chem & Polymer", ecpId],
   ] as [string, number][]) {
     if (!supplierId) {
-      console.log(`Supplier "${label}" not found, skipping.`);
+      skipped += 1;
       continue;
     }
 
@@ -50,19 +73,21 @@ async function seed() {
       .where(eq(supplierBrandsTable.supplierId, supplierId));
 
     if (Number(existing?.c) > 0) {
-      console.log(`✓ ${label} shop data already seeded, skipping.`);
+      skipped += 1;
       continue;
     }
 
-    console.log(`Seeding shop data for ${label} (id=${supplierId})...`);
     await seedSupplierShop(supplierId, label);
+    changed += 1;
   }
 
-  console.log("✅ Supplier shop seed complete!");
+  console.log(`Supplier shop seed complete: ${changed} changed, ${skipped} skipped.`);
   process.exit(0);
 }
 
 export async function seedSupplierShop(supplierId: number, name: string) {
+  requireSupplierShopMutationAccess();
+  const { db, supplierBrandsTable, supplierDocumentsTable, supplierExpertsTable } = await import("@workspace/db");
   if (name === "SABIC Distribution") {
     await db.insert(supplierBrandsTable).values([
       {
@@ -272,7 +297,12 @@ export async function seedSupplierShop(supplierId: number, name: string) {
     ]);
   }
 
-  console.log(`  ✓ Brands, documents, experts seeded for ${name}`);
 }
 
-seed().catch(err => { console.error(err); process.exit(1); });
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  seed().catch((error) => {
+    console.error("Supplier shop seed failed.");
+    printBlockedOperation(error);
+    process.exit(1);
+  });
+}

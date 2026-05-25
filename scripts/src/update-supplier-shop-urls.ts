@@ -2,18 +2,11 @@
  * One-time migration script for existing demo databases that were seeded before
  * seed-supplier-shop.ts was updated with real URLs.
  *
- * Run once with: pnpm --filter @workspace/scripts run update:supplier-shop-urls
+ * Manual controlled operation only. See docs/privileged-script-runbook.md.
  *
  * Fresh databases seeded with `pnpm seed` do not need this script.
  */
-import { db } from "@workspace/db";
-import {
-  suppliersTable,
-  supplierBrandsTable,
-  supplierDocumentsTable,
-  supplierExpertsTable,
-} from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { printBlockedOperation, requirePrivilegedOperation } from "./privileged-operation-guard.js";
 
 function avatar(name: string, bg = "0f172a") {
   return `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=${bg}&color=ffffff&size=128&bold=true&rounded=true`;
@@ -24,6 +17,18 @@ function brandLogo(name: string, bg = "1d4ed8") {
 }
 
 async function update() {
+  requirePrivilegedOperation({
+    action: "supplier content maintenance",
+    executionFlag: "--execute-supplier-content-maintenance",
+    allowedEnvironments: ["local", "development", "test", "staging", "production"],
+    confirmation: (environment) => `UPDATE SUPPLIER CONTENT IN ${environment}`,
+    requireApproval: true,
+    requireAuditReference: true,
+    requireBackup: true,
+  });
+  const { db, suppliersTable, supplierBrandsTable, supplierDocumentsTable, supplierExpertsTable } = await import("@workspace/db");
+  const { eq } = await import("drizzle-orm");
+
   console.log("Updating supplier shop URLs...");
 
   // ── Brand logos ──────────────────────────────────────────────────────────
@@ -85,6 +90,7 @@ async function update() {
   const sabicId = byName["SABIC Distribution"];
   const nccId = byName["National Chemical Co."];
   const ecpId = byName["Emirates Chem & Polymer"];
+  let addedDocuments = 0;
 
   if (sabicId) {
     const existing = await db
@@ -101,7 +107,7 @@ async function update() {
         fileUrl: "https://pubchem.ncbi.nlm.nih.gov/compound/14798#section=Safety-and-Hazards",
         fileSize: "245 KB",
       });
-      console.log("  + Added SDS for SABIC Distribution");
+      addedDocuments += 1;
     }
     if (!titles.has("Polyethylene HDPE \u2014 Technical Data Sheet (TDS)")) {
       await db.insert(supplierDocumentsTable).values({
@@ -111,7 +117,7 @@ async function update() {
         fileUrl: "https://pubchem.ncbi.nlm.nih.gov/compound/14482#section=Chemical-and-Physical-Properties",
         fileSize: "312 KB",
       });
-      console.log("  + Added TDS for SABIC Distribution");
+      addedDocuments += 1;
     }
   }
 
@@ -130,7 +136,7 @@ async function update() {
         fileUrl: "https://pubchem.ncbi.nlm.nih.gov/compound/1176#section=Chemical-and-Physical-Properties",
         fileSize: "198 KB",
       });
-      console.log("  + Added TDS for National Chemical Co.");
+      addedDocuments += 1;
     }
   }
 
@@ -149,13 +155,17 @@ async function update() {
         fileUrl: "https://pubchem.ncbi.nlm.nih.gov/compound/887#section=Chemical-and-Physical-Properties",
         fileSize: "185 KB",
       });
-      console.log("  + Added TDS for Emirates Chem & Polymer");
+      addedDocuments += 1;
     }
   }
 
-  console.log("✓ TDS/SDS records ensured for all suppliers");
+  console.log(`Document maintenance complete: ${addedDocuments} missing records added.`);
   console.log("✅ Update complete!");
   process.exit(0);
 }
 
-update().catch(err => { console.error(err); process.exit(1); });
+update().catch((error) => {
+  console.error("Supplier content maintenance failed.");
+  printBlockedOperation(error);
+  process.exit(1);
+});

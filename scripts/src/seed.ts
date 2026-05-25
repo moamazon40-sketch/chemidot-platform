@@ -1,13 +1,28 @@
-import bcrypt from "bcryptjs";
-import { db } from "@workspace/db";
-import {
-  usersTable, suppliersTable, categoriesTable, productsTable,
-  rfqsTable, quotationsTable, collectiveOrdersTable,
-  collectiveOrderParticipantsTable, ordersTable,
-} from "@workspace/db";
-import { seedSupplierShop } from "./seed-supplier-shop.js";
+import { printBlockedOperation, requirePrivilegedOperation } from "./privileged-operation-guard.js";
 
 async function seed() {
+  requirePrivilegedOperation({
+    action: "demo data seed",
+    executionFlag: "--execute-demo-seed",
+    allowedEnvironments: ["local", "development", "test"],
+    confirmation: (environment) => `SEED DEMO DATA IN ${environment}`,
+    requireApproval: true,
+    requireAuditReference: true,
+  });
+  const { default: bcrypt } = await import("bcryptjs");
+  const {
+    db,
+    usersTable,
+    suppliersTable,
+    categoriesTable,
+    productsTable,
+    rfqsTable,
+    quotationsTable,
+    collectiveOrdersTable,
+    collectiveOrderParticipantsTable,
+  } = await import("@workspace/db");
+  const { seedSupplierShop } = await import("./seed-supplier-shop.js");
+
   console.log("Seeding database...");
 
   // ── Categories ──────────────────────────────────────────────────────────────
@@ -435,4 +450,8 @@ async function seed() {
   process.exit(0);
 }
 
-seed().catch(e => { console.error(e); process.exit(1); });
+seed().catch((error) => {
+  console.error("Demo seed failed.");
+  printBlockedOperation(error);
+  process.exit(1);
+});

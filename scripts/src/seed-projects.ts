@@ -1,5 +1,4 @@
-import { db } from "@workspace/db";
-import { projectsTable } from "@workspace/db";
+import { printBlockedOperation, requirePrivilegedOperation } from "./privileged-operation-guard.js";
 
 const projects = [
   {
@@ -125,6 +124,16 @@ The nutrient formulations were validated by an agrochemist specialist via Chemid
 ];
 
 async function seed() {
+  requirePrivilegedOperation({
+    action: "project content seed",
+    executionFlag: "--execute-project-seed",
+    allowedEnvironments: ["local", "development", "test", "staging"],
+    confirmation: (environment) => `SEED PROJECT CONTENT IN ${environment}`,
+    requireApproval: true,
+    requireAuditReference: true,
+  });
+  const { db, projectsTable } = await import("@workspace/db");
+
   console.log("Seeding projects...");
   for (const p of projects) {
     await db.insert(projectsTable).values(p).onConflictDoNothing();
@@ -133,4 +142,8 @@ async function seed() {
   process.exit(0);
 }
 
-seed().catch(err => { console.error(err); process.exit(1); });
+seed().catch((error) => {
+  console.error("Project content seed failed.");
+  printBlockedOperation(error);
+  process.exit(1);
+});
