@@ -86,6 +86,9 @@ changing schema or business data.
 - Require repository checks to pass before merge.
 - Confirm the build path remains application-only and contains no call to
   database push, seed, cleanup, reset, admin, or supplier-maintenance actions.
+- The `release:safety-check` package command is run during pull request
+  validation to reject privileged-operation references in build/deploy
+  entrypoints and workflow run commands.
 - Treat failed checks or unexplained file changes as a reason to pause release.
 
 ### Preview Deployment
