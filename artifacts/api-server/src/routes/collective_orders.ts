@@ -261,7 +261,11 @@ router.get("/collective-orders/:id", optionalAuth, asyncHandler(async (req, res)
     : [null];
   const isSelectedSupplier = !!viewerSupplier && row.collective_orders.supplierId === viewerSupplier.id;
   const canSeeBuyerDetails = isAdmin || isLeadBuyer || isParticipant || (isSelectedSupplier && row.collective_orders.isAllocationSharingApproved);
-  const canSeeOffers = isAdmin || isLeadBuyer || isParticipant || !!viewerSupplier;
+  const visibleOffers = isAdmin || isLeadBuyer || isParticipant
+    ? offers
+    : viewerSupplier
+      ? offers.filter((offer) => offer.collective_order_offers.supplierId === viewerSupplier.id)
+      : [];
 
   const productShape = p ? {
     id: p.id,
@@ -308,7 +312,7 @@ router.get("/collective-orders/:id", optionalAuth, asyncHandler(async (req, res)
     deliveryRegionSummary: Array.from(new Set(participants.map(pp =>
       (pp.collective_order_participants.deliveryDestination || row.collective_orders.deliveryRegion).split(",")[0]?.trim()
     ).filter(Boolean))),
-    offers: canSeeOffers ? offers.map(o => ({
+    offers: visibleOffers.map(o => ({
       id: o.collective_order_offers.id,
       collectiveOrderId: o.collective_order_offers.collectiveOrderId,
       supplierId: o.collective_order_offers.supplierId,
@@ -324,7 +328,7 @@ router.get("/collective-orders/:id", optionalAuth, asyncHandler(async (req, res)
       validUntil: o.collective_order_offers.validUntil instanceof Date ? o.collective_order_offers.validUntil.toISOString() : o.collective_order_offers.validUntil,
       notes: o.collective_order_offers.notes,
       createdAt: o.collective_order_offers.createdAt instanceof Date ? o.collective_order_offers.createdAt.toISOString() : o.collective_order_offers.createdAt,
-    })) : [],
+    })),
     allocations: (isAdmin || (isSelectedSupplier && row.collective_orders.isAllocationSharingApproved) || isParticipant)
       ? allocations
           .filter(a => isAdmin || (isSelectedSupplier && row.collective_orders.isAllocationSharingApproved) || a.collective_order_allocations.buyerId === user?.id)
