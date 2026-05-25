@@ -1,0 +1,22 @@
+name: Release Safety Checks
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  release-safety-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Enable pnpm through Corepack
+        run: corepack enable
+      - name: Check build and deploy entrypoints
+        run: pnpm run release:safety-check
