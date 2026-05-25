@@ -23,10 +23,6 @@ services:
         value: https://chemidot.onrender.com
       - key: LOG_LEVEL
         value: info
-      - key: RESET_PASSWORD
-        generateValue: true
-      - key: USER_EMAILS
-        value: mohamed@example.com
 
 databases:
   - name: chemidot-db

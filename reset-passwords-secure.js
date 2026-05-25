@@ -1,136 +1,144 @@
-const { Pool } = require('pg');
-const bcrypt = require('bcryptjs');
+'use strict';
 
-// Configuration validation
-function validateConfig() {
-  const required = ['DATABASE_URL', 'RESET_PASSWORD', 'USER_EMAILS'];
-  const missing = required.filter(key => !process.env[key]);
-  
+// MANUAL NON-PRODUCTION OPERATION ONLY. Never invoke from build or deployment.
+const EXECUTION_FLAG = '--execute-password-reset';
+const ALLOWED_ENVIRONMENTS = new Set(['local', 'development', 'test', 'staging']);
+const REQUIRED_CONFIGURATION = [
+  'DATABASE_URL',
+  'RESET_PASSWORD',
+  'USER_EMAILS',
+  'PASSWORD_RESET_ENVIRONMENT',
+  'PASSWORD_RESET_TARGET_HOST',
+  'PASSWORD_RESET_CONFIRMATION',
+];
+
+function getConfiguration() {
+  const missing = REQUIRED_CONFIGURATION.filter((key) => !process.env[key]);
   if (missing.length > 0) {
-    console.error('❌ Missing required environment variables:', missing.join(', '));
-    console.error('Please set the following environment variables:');
-    missing.forEach(key => {
-      if (key === 'DATABASE_URL') {
-        console.error(`  ${key}=postgresql://username:password@localhost:5432/database_name`);
-      } else if (key === 'RESET_PASSWORD') {
-        console.error(`  ${key}=your_secure_password_here`);
-      } else if (key === 'USER_EMAILS') {
-        console.error(`  ${key}=email1@example.com,email2@example.com`);
-      }
-    });
-    process.exit(1);
+    throw new Error(`missing required configuration: ${missing.join(', ')}`);
   }
-}
 
-// Parse user emails from environment variable
-function parseUserEmails() {
-  const emails = process.env.USER_EMAILS.split(',').map(email => email.trim());
-  const invalidEmails = emails.filter(email => !email.includes('@'));
-  
-  if (invalidEmails.length > 0) {
-    console.error('❌ Invalid email format:', invalidEmails.join(', '));
-    process.exit(1);
+  const environment = process.env.PASSWORD_RESET_ENVIRONMENT.trim().toLowerCase();
+  if (!ALLOWED_ENVIRONMENTS.has(environment)) {
+    throw new Error('this utility is blocked outside approved non-production environments');
   }
-  
-  return emails;
-}
 
-// Database connection
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false }
-});
+  let databaseUrl;
+  try {
+    databaseUrl = new URL(process.env.DATABASE_URL);
+  } catch {
+    throw new Error('DATABASE_URL is invalid');
+  }
+
+  if (!['postgres:', 'postgresql:'].includes(databaseUrl.protocol)) {
+    throw new Error('DATABASE_URL must use a PostgreSQL protocol');
+  }
+
+  const targetHost = process.env.PASSWORD_RESET_TARGET_HOST.trim().toLowerCase();
+  if (!targetHost || targetHost !== databaseUrl.hostname.toLowerCase()) {
+    throw new Error('the confirmed target host does not match the configured database host');
+  }
+
+  const expectedConfirmation = `RESET PASSWORDS IN ${environment} ON ${targetHost}`;
+  if (process.env.PASSWORD_RESET_CONFIRMATION !== expectedConfirmation) {
+    throw new Error('explicit password reset confirmation is required');
+  }
+
+  const password = process.env.RESET_PASSWORD;
+  if (password.length < 12) {
+    throw new Error('RESET_PASSWORD must contain at least 12 characters');
+  }
+
+  const users = [...new Set(process.env.USER_EMAILS.split(',').map((email) => email.trim()).filter(Boolean))];
+  if (users.length === 0 || users.some((email) => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email))) {
+    throw new Error('USER_EMAILS must contain valid email addresses');
+  }
+
+  return {
+    connectionString: process.env.DATABASE_URL,
+    databaseUrl,
+    environment,
+    password,
+    users,
+  };
+}
 
 async function resetPasswords() {
-  validateConfig();
-  
-  const newPassword = process.env.RESET_PASSWORD;
-  const users = parseUserEmails();
-  
-  console.log(`🔧 Starting password reset for ${users.length} users...`);
-  
-  // Validate password strength
-  if (newPassword.length < 8) {
-    console.error('❌ Password must be at least 8 characters long');
-    process.exit(1);
-  }
-  
-  const hashedPassword = await bcrypt.hash(newPassword, 12); // Use stronger rounds
-  
-  const results = {
-    success: [],
-    failed: [],
-    notFound: []
-  };
-
+  let configuration;
   try {
-    for (const email of users) {
+    configuration = getConfiguration();
+  } catch (error) {
+    console.error(`Password reset blocked: ${error.message}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(`Authorized non-production password reset starting for ${configuration.users.length} account(s).`);
+
+  const { Pool } = require('pg');
+  const bcrypt = require('bcryptjs');
+  const isLocalConnection = ['localhost', '127.0.0.1', '::1'].includes(
+    configuration.databaseUrl.hostname.toLowerCase(),
+  );
+  const pool = new Pool({
+    connectionString: configuration.connectionString,
+    ssl: isLocalConnection ? false : { rejectUnauthorized: true },
+  });
+
+  let client;
+  try {
+    client = await pool.connect();
+    const hashedPassword = await bcrypt.hash(configuration.password, 12);
+    let updatedCount = 0;
+
+    await client.query('BEGIN');
+    for (const email of configuration.users) {
+      const result = await client.query(
+        'UPDATE users SET password_hash = $1, updated_at = NOW() WHERE email = $2',
+        [hashedPassword, email],
+      );
+      updatedCount += result.rowCount;
+    }
+    if (updatedCount !== configuration.users.length) {
+      await client.query('ROLLBACK');
+      console.warn('Password reset not performed because one or more requested accounts were not found.');
+      process.exitCode = 1;
+      return;
+    }
+
+    await client.query('COMMIT');
+    console.log(`Password reset completed for ${updatedCount} account(s).`);
+  } catch {
+    if (client) {
       try {
-        // Check if user exists first
-        const userCheck = await pool.query(
-          'SELECT id, email FROM users WHERE email = $1',
-          [email]
-        );
-        
-        if (userCheck.rows.length === 0) {
-          console.log(`⚠️  User not found: ${email}`);
-          results.notFound.push(email);
-          continue;
-        }
-        
-        // Update password
-        const updateResult = await pool.query(
-          'UPDATE users SET password_hash = $1, updated_at = NOW() WHERE email = $2 RETURNING id',
-          [hashedPassword, email]
-        );
-        
-        if (updateResult.rows.length > 0) {
-          console.log(`✅ Password reset successful for ${email} (User ID: ${updateResult.rows[0].id})`);
-          results.success.push(email);
-        } else {
-          console.log(`❌ Password reset failed for ${email} - no rows affected`);
-          results.failed.push(email);
-        }
-      } catch (error) {
-        console.error(`❌ Error resetting password for ${email}:`, error.message);
-        results.failed.push(email);
+        await client.query('ROLLBACK');
+      } catch {
+        // Do not print database errors because they may include sensitive context.
       }
     }
-    
-    // Summary
-    console.log('\n📊 Password Reset Summary:');
-    console.log(`✅ Successful: ${results.success.length}`);
-    console.log(`❌ Failed: ${results.failed.length}`);
-    console.log(`⚠️  Not Found: ${results.notFound.length}`);
-    
-    if (results.success.length > 0) {
-      console.log(`\n✅ Successfully reset passwords for: ${results.success.join(', ')}`);
-    }
-    
-    if (results.failed.length > 0) {
-      console.log(`\n❌ Failed to reset passwords for: ${results.failed.join(', ')}`);
-    }
-    
-    if (results.notFound.length > 0) {
-      console.log(`\n⚠️  Users not found: ${results.notFound.join(', ')}`);
-    }
-    
-    if (results.failed.length > 0 || results.notFound.length > 0) {
-      process.exit(1);
-    }
-    
-  } catch (error) {
-    console.error('❌ Database connection error:', error.message);
-    process.exit(1);
+    console.error('Password reset failed; database error details have been suppressed.');
+    process.exitCode = 1;
   } finally {
+    if (client) {
+      client.release();
+    }
     await pool.end();
   }
 }
 
-// Handle unhandled promise rejections
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
-  process.exit(1);
-});
+async function main() {
+  if (!process.argv.slice(2).includes(EXECUTION_FLAG)) {
+    console.error(`Password reset blocked: manual execution requires the ${EXECUTION_FLAG} flag.`);
+    process.exitCode = 1;
+    return;
+  }
 
-resetPasswords();
+  await resetPasswords();
+}
+
+if (require.main === module) {
+  main().catch(() => {
+    console.error('Password reset terminated unexpectedly; details have been suppressed.');
+    process.exitCode = 1;
+  });
+}
