@@ -3,7 +3,7 @@ services:
     name: chemidot
     runtime: node
     plan: starter
-    buildCommand: npm install -g pnpm && pnpm install --frozen-lockfile && pnpm --filter @workspace/db push && pnpm --filter @workspace/chemidot build && pnpm --filter @workspace/api-server build
+    buildCommand: npm install -g pnpm && pnpm install --frozen-lockfile && pnpm --filter @workspace/chemidot build && pnpm --filter @workspace/api-server build
     startCommand: pnpm --filter @workspace/api-server start
     healthCheckPath: /api/healthz
     envVars:
