@@ -2,7 +2,11 @@
 
 ## Scope And Evidence
 
-This document is an architecture and operations plan only. It does not change application logic, database schema, migrations, deployment configuration, runtime behavior, or environment files.
+This document began as an architecture and operations plan. This implementation branch changes only automatic build/deployment command wiring as recorded below; it does not change application logic, database schema, migrations, or environment files.
+
+### Implementation Note
+
+On branch `fix/remove-db-push-from-build`, the automatic database mutation entry points identified below are removed from the root build command and the Render build command. Manual database and base-data scripts remain available only as explicit operational commands pending further governance work; migrations and data operations are not part of application build or deployment.
 
 The review covered:
 
@@ -15,16 +19,16 @@ The review covered:
 
 ## 1. Executive Summary
 
-Chemidot should establish operational controls before adding significant new product features. The current repository includes build/deployment paths that can mutate a database schema or baseline data automatically, plus administrative utilities capable of changing credentials, privileges, supplier content, demo data, or broad business records.
+Chemidot should establish operational controls before adding significant new product features. The audit identified build/deployment paths that could mutate a database schema or baseline data automatically, plus administrative utilities capable of changing credentials, privileges, supplier content, demo data, or broad business records. This branch removes the identified automatic build/deploy mutation links; the privileged utilities still require governance.
 
 For a B2B chemical marketplace, these operations affect trust, compliance evidence, customer account security, and investor review readiness. An application deployment should never silently determine whether production data or schema is changed.
 
-### Main Risks
+### Main Risks Identified In The Audit Baseline
 
 | Risk | Evidence Found | Severity |
 | --- | --- | --- |
-| Database mutation during Vercel build | `vercel.json` invokes root `pnpm build`, which invokes `scripts/push-db-if-configured.mjs`; when configured, that script runs a forced Drizzle push and inserts base data | Critical |
-| Database mutation during Render build | `render.yaml` includes `pnpm --filter @workspace/db push` in the build command | Critical |
+| Database mutation during Vercel build | Before this branch, `vercel.json` invoked root `pnpm build`, which invoked `scripts/push-db-if-configured.mjs`; when configured, that script ran a forced Drizzle push and inserted base data | Critical, remediated in the automatic build path on this branch |
+| Database mutation during Render build | Before this branch, `render.yaml` included `pnpm --filter @workspace/db push` in the build command | Critical, remediated in the automatic build path on this branch |
 | Database and demo data mutation after merge | `scripts/post-merge.sh` runs database push and seed commands | Critical |
 | Credential reset or disclosure risk | Password utilities include live update scripts and utilities that can log credential or environment information | Critical |
 | Uncontrolled privilege elevation | Admin promotion script updates a user's role and permissions without an operational approval or audit workflow in the script | High |
@@ -43,7 +47,7 @@ For a B2B chemical marketplace, these operations affect trust, compliance eviden
 
 ### Vercel Path
 
-`vercel.json` configures the build command as `pnpm build`. The root `package.json` build command currently runs:
+`vercel.json` configures the build command as `pnpm build`. Before this remediation, the root `package.json` build command ran:
 
 1. Type checking
 2. `node scripts/push-db-if-configured.mjs`
@@ -55,26 +59,26 @@ When `DATABASE_URL` is available, `scripts/push-db-if-configured.mjs` runs:
 - `pnpm --filter @workspace/db run push-force`
 - `pnpm --filter @workspace/scripts run ensure-base-data`
 
-This means a Vercel build can apply forced schema synchronization and insert baseline category data. If `DATABASE_URL` is absent, the script skips mutation, but configuration presence is not an acceptable production approval control.
+This previously meant a Vercel build could apply forced schema synchronization and insert baseline category data. The remediated root build command performs type checking and application builds only; it no longer invokes `scripts/push-db-if-configured.mjs`.
 
 ### Render Path
 
-`render.yaml` defines a build command that installs dependencies, then runs:
+Before this remediation, `render.yaml` defined a build command that installed dependencies, then ran:
 
 - `pnpm --filter @workspace/db push`
 - Application builds
 
-The Render path can therefore apply database schema changes during an ordinary deployment build. The environment configuration includes a database connection configuration key, so database mutation is part of the deploy risk surface.
+The remediated Render build command installs dependencies and builds the applications only; it no longer runs Drizzle push during deployment.
 
 ### Package And Operational Commands
 
 | Path | Command Or Trigger | Current Effect | Automatic Deployment Risk | Required Target State |
 | --- | --- | --- | --- | --- |
-| `package.json` | `pnpm build` | Invokes conditional forced database push and base-data insertion before compiling apps | Critical through Vercel | Build must compile only |
-| `vercel.json` | `buildCommand: pnpm build` | Reaches the mutation-capable root build | Critical | No database action reachable from build |
-| `render.yaml` | Build command | Runs Drizzle push before application builds | Critical | Remove database action from build |
+| `package.json` | `pnpm build` | Previously invoked conditional forced database push and base-data insertion; now performs typecheck and application builds only | Remediated on this branch | Keep build compile-only |
+| `vercel.json` | `buildCommand: pnpm build` | Uses the remediated root build without a database action | Remediated on this branch | Keep build database-free |
+| `render.yaml` | Build command | Previously ran Drizzle push; now performs install and application builds only | Remediated on this branch | Keep build database-free |
 | `lib/db/package.json` | `push`, `push-force` | Synchronizes schema directly using Drizzle tooling | Critical if used against production without governance | Manual, restricted workflow only; no forced production push |
-| `scripts/push-db-if-configured.mjs` | Called from root build | Forced schema push plus baseline data insert when database URL exists | Critical | Not callable from deploy/build; govern or retire |
+| `scripts/push-db-if-configured.mjs` | Retained explicit utility, no longer called from root build | Forced schema push plus baseline data insert when database URL exists | Critical if invoked manually against production | Keep disconnected from deploy/build; govern or retire |
 | `scripts/post-merge.sh` | Post-merge operational workflow | Installs dependencies, pushes schema, seeds project and supplier content | Critical if pointed at production | Local/staging-only controlled use or retire |
 
 ### Database Migration Context
