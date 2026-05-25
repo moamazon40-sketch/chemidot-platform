@@ -30,6 +30,10 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       res.status(401).json({ message: "Unauthorized" });
       return;
     }
+    if (user.status !== "active") {
+      res.status(403).json({ message: "Account is not active" });
+      return;
+    }
     (req as any).user = user;
     next();
   } catch {
